@@ -1,4 +1,4 @@
-import lineCounter.LineCounterWorker;
+import lineCounter.LineCounterCallable;
 
 import java.io.File;
 import java.io.IOException;
@@ -9,7 +9,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -30,10 +32,36 @@ public class Main {
                 .boxed()
                 .collect(Collectors.toMap(intervals::get, i -> 0));
 
+        // Create a list of source files from the given directory
         File path = new File(dir);
         List<Path> sourceFiles = getSourceFiles(path);
 
-        CountDownLatch latch = new CountDownLatch(sourceFiles.size());
+        // Create ExecutorService with a thread for each source file
+        ExecutorService executor = Executors.newFixedThreadPool(sourceFiles.size());
+
+        // Create a list of LineCounterCallable for each source file
+        List<LineCounterCallable> lineCounterCallables = sourceFiles
+                .stream()
+                .map(p -> new LineCounterCallable(p.toFile()))
+                .toList();
+
+        List<Future<Long>> futureLines = lineCounterCallables.stream().map(executor::submit).toList();
+
+        Thread valueChecker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (true) {
+                    if (futureLines.stream().allMatch(Future::isDone)) {
+                        // Notify the main thread that all the values have been collected
+                        synchronized (this) {
+                            this.notify();
+                        }
+                    }
+                }
+            }
+        });
+
+        /*CountDownLatch latch = new CountDownLatch(sourceFiles.size());
 
         Map<Path, LineCounterWorker> pathsToThreads = getPathToThreadMap(sourceFiles, latch);
 
@@ -60,7 +88,7 @@ public class Main {
 
         // Print the result for each interval
         intervalToCount
-                .forEach((k, v) -> System.out.println(k + " -> " + v));
+                .forEach((k, v) -> System.out.println(k + " -> " + v));*/
     }
 
     private static List<Interval> initIntervals(int numInt, int maxLines) {
@@ -79,10 +107,10 @@ public class Main {
                 .toList();
     }
 
-    private static Map<Path, LineCounterWorker> getPathToThreadMap(List<Path> sourceFiles, CountDownLatch barrier) {
-        Map<Path, LineCounterWorker> lineCounters = new HashMap<>();
+    private static Map<Path, LineCounterCallable> getPathToThreadMap(List<Path> sourceFiles) {
+        Map<Path, LineCounterCallable> lineCounters = new HashMap<>();
         for (Path p : sourceFiles) {
-            LineCounterWorker worker = new LineCounterWorker(p.toFile(), barrier);
+            LineCounterCallable worker = new LineCounterCallable(p.toFile());
             lineCounters.put(p, worker);
         }
         return lineCounters;
